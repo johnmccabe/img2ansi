@@ -17,7 +17,7 @@ var ANSI256Palette = []color.Color{
 
 func main() {
 	fmt.Println("Running go-ansi-motd")
-	reader, err := os.Open("images/mark_small.png")
+	reader, err := os.Open("images/ryu.png")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func main() {
 			bottom := m.At(x, y+1)
 			fmt.Print(rgbToTrueColor(top, bottom))
 		}
-		fmt.Print("\n")
+		fmt.Print("\033[0m\n")
 	}
 }
 
@@ -45,9 +45,31 @@ func paletteMatch(c color.Color) color.RGBA {
 }
 
 func rgbToTrueColor(top, bottom color.Color) string {
-	rt, gt, bt, _ := top.RGBA()
-	rb, gb, bb, _ := bottom.RGBA()
-	return fmt.Sprintf("\033[38;2;%d;%d;%d;48;2;%d;%d;%dm▄", uint8(rb), uint8(gb), uint8(bb), uint8(rt), uint8(gt), uint8(bt))
+	var topcode, bottomcode string
+	rt, gt, bt, at := top.RGBA()
+	rb, gb, bb, ab := bottom.RGBA()
+	var symbol string
+	if uint8(ab) >= 30 && uint8(at) >= 30 {
+		symbol = "▄"
+	} else if uint8(ab) >= 30 {
+		symbol = "▄"
+	} else if uint8(at) >= 30 {
+		symbol = "▀"
+	} else {
+		symbol = " "
+	}
+
+	if uint8(ab) >= 30 {
+		topcode = fmt.Sprintf("38;2;%d;%d;%d", rb, gb, bb)
+	} else {
+		topcode = "39"
+	}
+	if uint8(at) >= 30 {
+		bottomcode = fmt.Sprintf("48;2;%d;%d;%d", rt, gt, bt)
+	} else {
+		bottomcode = "49"
+	}
+	return fmt.Sprintf("\033[%s;%sm%s", topcode, bottomcode, symbol)
 }
 
 func rgbToXterm256(c color.Color) string {
