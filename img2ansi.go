@@ -1,97 +1,137 @@
-package main
+package img2ansi
 
 import (
 	"fmt"
 	"image"
 	"image/color"
+	_ "image/gif"
+	_ "image/jpeg"
 	_ "image/png"
-	"log"
-	"os"
-	"reflect"
+
+	"github.com/johnmccabe/img2ansi/palette"
 )
 
-// ANSI256Palette TODO
-var ANSI256Palette = []color.Color{
-	color.RGBA{0x00, 0x00, 0x44, 0xff},
+const alphaThreshold = 30
+
+// ansiBlock
+type ansiBlock struct {
+	FG    string
+	BG    string
+	Glyph string
 }
 
-var debugBuffer string
+// RenderANSI16 TODO
+func RenderANSI16(i image.Image) (string, error) {
+	return renderANSI(i, palette.Xterm16)
+}
 
-// type ANSIBuffer struct {
-// 	Character [][]string
-// }
+// RenderANSI256 TODO
+func RenderANSI256(i image.Image) (string, error) {
+	return renderANSI(i, palette.Xterm256)
+}
 
-const RESET = "\033[0m"
-const ALPHATHRESHOLD = 30
+// RenderTrueColor TODO
+func RenderTrueColor(i image.Image) (string, error) {
+	return renderANSI(i, nil)
+}
 
-// const FG = 38
-// const BG = 48
+func renderANSI(i image.Image, p color.Palette) (string, error) {
+	bounds := i.Bounds()
+	rowbuffer := make([][]ansiBlock, (bounds.Max.Y+1)/2)
 
-func main() {
-	fmt.Println("Running img2ansi")
-	reader, err := os.Open("images/ryu.png")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer reader.Close()
-	m, _, err := image.Decode(reader)
-	if err != nil {
-		log.Fatal(err)
-	}
-	bounds := m.Bounds()
-	fmt.Printf("Bounds: %v\n", bounds)
-	fmt.Printf("Space:  %s\n", reflect.TypeOf(m.ColorModel()).String())
+	for row := 0; row < bounds.Max.Y; row += 2 {
+		rowbuffer[row/2] = make([]ansiBlock, bounds.Max.X)
+		for x := 0; x < bounds.Max.X; x++ {
+			top := i.At(x, row)
+			bottom := i.At(x, row+1)
+			if p == nil {
+				rowbuffer[row/2] = append(rowbuffer[row/2], rgbToTrueColor(top, bottom))
 
-	// var buffer ANSIBuffer
-
-	for y := bounds.Min.Y; y < bounds.Max.Y; y += 2 {
-		debugBuffer += fmt.Sprintf("Image Row: %d\n", y)
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			top := m.At(x, y)
-			bottom := m.At(x, y+1)
-			debugBuffer += fmt.Sprintf("  X= %2d: ", x)
-			// buffer[x][y/2] = rgbToTrueColor(top, bottom)
-			fmt.Print(rgbToTrueColor(top, bottom))
+			} else {
+				rowbuffer[row/2] = append(rowbuffer[row/2], rgbToXterm(top, bottom, p))
+			}
 		}
-		fmt.Printf("%s\n", RESET)
 	}
-	fmt.Println("")
-	fmt.Println("DEBUG============")
-	fmt.Println(debugBuffer)
+	return bufferToString(rowbuffer), nil
 }
 
-func paletteMatch(c color.Color) color.RGBA {
-	return color.RGBA{uint8(255), uint8(255), uint8(255), uint8(0)}
+func bufferToString(rowbuffer [][]ansiBlock) string {
+	var s string
+	for y := 0; y < len(rowbuffer); y++ {
+		for x := 0; x < len(rowbuffer[0]); x++ {
+			if x == 0 {
+				s += rowbuffer[y][x].printCompact(ansiBlock{})
+			}
+			if x > 0 {
+				s += rowbuffer[y][x].printCompact(rowbuffer[y][x-1])
+			}
+		}
+		// Reset escape codes and add a newline
+		s += "\033[0m"
+		s += "\n"
+	}
+	return s
 }
 
-func rgbToTrueColor(top, bottom color.Color) string {
-	var topcode, bottomcode string
+func (b ansiBlock) printCompact(previous ansiBlock) (out string) {
+	if (b.FG == previous.FG) && (b.BG == previous.BG) {
+		out = fmt.Sprintf("%s", b.Glyph)
+	} else if b.FG == previous.FG {
+		out = fmt.Sprintf("\033[%sm%s", b.BG, b.Glyph)
+	} else if b.BG == previous.BG {
+		out = fmt.Sprintf("\033[%sm%s", b.FG, b.Glyph)
+	} else {
+		out = fmt.Sprintf("\033[%s;%sm%s", b.BG, b.FG, b.Glyph)
+	}
+	return out
+}
+
+func rgbToTrueColor(top, bottom color.Color) ansiBlock {
+	var fg, bg string
 	rt, gt, bt, at := top.RGBA()
 	rb, gb, bb, ab := bottom.RGBA()
 	var symbol string
-	if uint8(ab) >= ALPHATHRESHOLD && uint8(at) >= ALPHATHRESHOLD {
-		topcode = fmt.Sprintf("38;2;%d;%d;%d", uint8(rt), uint8(gt), uint8(bt))    // FG
-		bottomcode = fmt.Sprintf("48;2;%d;%d;%d", uint8(rb), uint8(gb), uint8(bb)) // BG
+	if uint8(ab) >= alphaThreshold && uint8(at) >= alphaThreshold {
 		symbol = "▀"
-	} else if uint8(ab) >= ALPHATHRESHOLD {
-		topcode = fmt.Sprintf("49")
-		bottomcode = fmt.Sprintf("38;2;%d;%d;%d", uint8(rb), uint8(gb), uint8(bb)) //FG
+		fg = fmt.Sprintf("38;2;%d;%d;%d", uint8(rt), uint8(gt), uint8(bt))
+		bg = fmt.Sprintf("48;2;%d;%d;%d", uint8(rb), uint8(gb), uint8(bb))
+	} else if uint8(ab) >= alphaThreshold {
 		symbol = "▄"
-	} else if uint8(at) >= ALPHATHRESHOLD {
-		topcode = fmt.Sprintf("38;2;%d;%d;%d", uint8(rt), uint8(gt), uint8(bt)) // FG
-		bottomcode = fmt.Sprintf("49")                                          // BG
+		fg = fmt.Sprintf("38;2;%d;%d;%d", uint8(rb), uint8(gb), uint8(bb))
+		bg = fmt.Sprintf("49")
+	} else if uint8(at) >= alphaThreshold {
 		symbol = "▀"
+		fg = fmt.Sprintf("38;2;%d;%d;%d", uint8(rt), uint8(gt), uint8(bt))
+		bg = fmt.Sprintf("49")
 	} else {
 		symbol = " "
+		fg = "39"
+		bg = "49"
 	}
-
-	debugBuffer += fmt.Sprintf("glyph: %s, top: %s, bottom: %s %s", symbol, topcode, bottomcode, RESET)
-
-	debugBuffer += fmt.Sprintf("top {%3d, %3d, %3d, %3d}, bottom  {%3d, %3d, %3d, %3d}\n", uint8(rt), uint8(gt), uint8(bt), uint8(at), uint8(rb), uint8(gb), uint8(bb), uint8(ab))
-
-	return fmt.Sprintf("\033[%s;%sm%s", topcode, bottomcode, symbol)
+	return ansiBlock{FG: fg, BG: bg, Glyph: symbol}
 }
 
-func rgbToXterm256(c color.Color) string {
-	return "TODO"
+func rgbToXterm(top, bottom color.Color, p color.Palette) ansiBlock {
+	var fg, bg string
+	_, _, _, at := top.RGBA()
+	_, _, _, ab := bottom.RGBA()
+	var symbol string
+	if uint8(ab) >= alphaThreshold && uint8(at) >= alphaThreshold {
+		symbol = "▀"
+		fg = fmt.Sprintf("38;5;%d", p.Index(top))
+		bg = fmt.Sprintf("48;5;%d", p.Index(bottom))
+	} else if uint8(ab) >= alphaThreshold {
+		symbol = "▄"
+		fg = fmt.Sprintf("38;5;%d", p.Index(bottom))
+		bg = fmt.Sprintf("49")
+	} else if uint8(at) >= alphaThreshold {
+		symbol = "▀"
+		fg = fmt.Sprintf("38;5;%d", p.Index(top))
+		bg = fmt.Sprintf("49")
+	} else {
+		symbol = " "
+		fg = "39"
+		bg = "49"
+	}
+	return ansiBlock{FG: fg, BG: bg, Glyph: symbol}
 }
